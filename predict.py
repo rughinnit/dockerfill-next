@@ -32,16 +32,18 @@ def load_model_and_tokenizer(model_choice: str = "auto") -> Tuple[torch.nn.Modul
 
     # Option A: Pre-trained StarCoder (Causal Generative)
     if model_choice in ("starcoder", "star"):
-        print("Loading Pre-trained StarCoder ('bigcode/tiny_starcoder_py')...")
-        tokenizer = AutoTokenizer.from_pretrained("bigcode/tiny_starcoder_py")
-        model = AutoModelForCausalLM.from_pretrained("bigcode/tiny_starcoder_py")
+        star_path = "pretrained_models/starcoder" if os.path.exists("pretrained_models/starcoder") else "bigcode/tiny_starcoder_py"
+        print(f"Loading Pre-trained StarCoder ('{star_path}')...")
+        tokenizer = AutoTokenizer.from_pretrained(star_path)
+        model = AutoModelForCausalLM.from_pretrained(star_path)
         model_mode = "causal"
 
     # Option B: Pre-trained CodeBERT (Masked)
     elif model_choice in ("codebert", "bert"):
-        print("Loading Pre-trained CodeBERT ('microsoft/codebert-base-mlm')...")
-        tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base-mlm")
-        model = AutoModelForMaskedLM.from_pretrained("microsoft/codebert-base-mlm")
+        bert_path = "pretrained_models/codebert" if os.path.exists("pretrained_models/codebert") else "microsoft/codebert-base-mlm"
+        print(f"Loading Pre-trained CodeBERT ('{bert_path}')...")
+        tokenizer = AutoTokenizer.from_pretrained(bert_path)
+        model = AutoModelForMaskedLM.from_pretrained(bert_path)
         model_mode = "masked"
 
     # Option C: Local Trained Checkpoint / Fallback

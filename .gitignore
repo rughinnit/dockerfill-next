@@ -47,5 +47,7 @@ Thumbs.db
 
 # Model checkpoints & weights
 model/
+pretrained_models/
 *.bin
 *.pt
+*.safetensors
