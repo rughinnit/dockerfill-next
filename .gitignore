@@ -44,3 +44,8 @@ ENV/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Model checkpoints & weights
+model/
+*.bin
+*.pt

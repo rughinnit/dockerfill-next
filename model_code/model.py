@@ -150,11 +150,17 @@ def validation(model_checkpoint: str, valid_data: List[Dict[str, torch.Tensor]],
     for data in valid_data:
         no += 1
         input_ids = data['input_ids'].to(device)
-        labels = data['labels'][0].to(device)
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+        labels = data['labels'].to(device)
+        if labels.dim() == 1:
+            labels = labels.unsqueeze(0)
+        labels = labels[0]
         model_input = {'input_ids': input_ids}
         with torch.no_grad():
             output = model(**model_input).logits
-        mask_token_index = (input_ids == tokenizer.mask_token_id)[0].nonzero(as_tuple=True)[0]
+        mask_id = tokenizer.mask_token_id if tokenizer.mask_token_id is not None else 4
+        mask_token_index = (input_ids == mask_id)[0].nonzero(as_tuple=True)[0]
 
         a, idx1 = torch.sort(output[0, mask_token_index], descending=True)
         softmax_probs = torch.softmax(a, dim=1).cpu().numpy()
@@ -179,8 +185,42 @@ def validation(model_checkpoint: str, valid_data: List[Dict[str, torch.Tensor]],
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="Train DockerFill model")
+    parser.add_argument("--batch_size", type=int, default=None, help="Batch size per device")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs (default: 10)")
+    parser.add_argument("--cpu", action="store_true", help="Force training on CPU")
+    args = parser.parse_args()
+
     set_seed(123)
     free_gpu_cache()
+
+    use_cuda = torch.cuda.is_available() and not args.cpu
+    train_device = torch.device("cuda:0" if use_cuda else "cpu")
+
+    # Auto-adjust batch size and gradient accumulation based on GPU VRAM
+    grad_accum = 1
+    grad_checkpointing = False
+    optimizer_name = "adamw_torch"
+
+    if use_cuda:
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        print(f"Detected GPU with {vram_gb:.2f} GB VRAM.")
+        if vram_gb < 4.0:
+            batch_size = args.batch_size or 1
+            grad_accum = 16 // batch_size
+            grad_checkpointing = True
+            optimizer_name = "adafactor"
+            print(f"Low VRAM mode: setting batch_size={batch_size}, gradient_accumulation_steps={grad_accum}, gradient_checkpointing=True, optim=adafactor")
+        elif vram_gb < 8.0:
+            batch_size = args.batch_size or 4
+            grad_accum = 16 // batch_size
+            grad_checkpointing = True
+        else:
+            batch_size = args.batch_size or 16
+    else:
+        batch_size = args.batch_size or 4
+        print(f"Running on CPU: setting batch_size={batch_size}")
 
     tokenizer = get_tokenizer()
 
@@ -194,7 +234,7 @@ def main() -> None:
         config = RobertaConfig(vocab_size=len(tokenizer), max_position_embeddings=514)
         model = RobertaForMaskedLM(config)
 
-    model.to(device)
+    model.to(train_device)
     print(f"Model parameters: {model.num_parameters()}")
 
     # Try loading dataset
@@ -208,34 +248,49 @@ def main() -> None:
         print(f"Dataset notice: {e}. Skipping training execution.")
         return
 
-    final_train_data = []
-    final_valid_data = []
-    for i in range(len(train_dataset)):
-        final_train_data.append({
-            'input_ids': torch.tensor(train_dataset[i]['input_ids'][0]),
-            'labels': torch.tensor(train_dataset[i]['labels'][0])
-        })
-    for i in range(len(valid_dataset)):
-        final_valid_data.append({
-            'input_ids': torch.tensor(valid_dataset[i]['input_ids'][0]),
-            'labels': torch.tensor(valid_dataset[i]['labels'][0])
-        })
+    def format_sample(sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        ids = sample['input_ids']
+        if isinstance(ids, (list, tuple)) and len(ids) > 0 and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+        input_tensor = torch.tensor(ids, dtype=torch.long)
+
+        lbls = sample['labels']
+        if isinstance(lbls, (list, tuple)) and len(lbls) > 0 and isinstance(lbls[0], (list, tuple)):
+            lbls = lbls[0]
+        labels_tensor = torch.tensor(lbls, dtype=torch.long)
+
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 1
+        attention_mask = (input_tensor != pad_id).long()
+
+        return {
+            'input_ids': input_tensor,
+            'labels': labels_tensor,
+            'attention_mask': attention_mask,
+        }
+
+    final_train_data = [format_sample(s) for s in train_dataset]
+    final_valid_data = [format_sample(s) for s in valid_dataset]
 
     print(f"Loaded {len(final_train_data)} train samples and {len(final_valid_data)} validation samples.")
 
     # Determine evaluation_strategy argument name based on transformers version
     training_kwargs: Dict[str, Any] = {
         "output_dir": "./model/",
-        "logging_strategy": "epoch",
-        "save_strategy": "epoch",
+        "logging_strategy": "steps",
+        "logging_steps": 10,
+        "save_strategy": "steps",
+        "save_steps": 50,
         "learning_rate": 5e-5,
         "warmup_ratio": 0.1,
-        "per_device_train_batch_size": 16,
+        "per_device_train_batch_size": batch_size,
+        "gradient_accumulation_steps": grad_accum,
+        "gradient_checkpointing": grad_checkpointing,
         "seed": 123,
         "save_total_limit": 2,
-        "num_train_epochs": 100,
-        "optim": "adamw_torch",
-        "fp16": torch.cuda.is_available(),
+        "num_train_epochs": args.epochs,
+        "optim": optimizer_name,
+        "fp16": use_cuda,
+        "no_cuda": not use_cuda,
         "report_to": 'none'
     }
 
