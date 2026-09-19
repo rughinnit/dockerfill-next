@@ -33,7 +33,7 @@ class RobertaForMaskedLM(RobertaPreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.num_labels = {'MLM': 50000, 'STI': 42, 'MIP': 18}
+        self.num_labels = {'MLM': getattr(config, 'vocab_size', 50000), 'STI': 42, 'MIP': 18}
         self.roberta = RobertaModel(config, add_pooling_layer=False)
         # MLM
         self.mlm_head = RobertaLMHead(config)
@@ -106,6 +106,9 @@ class RobertaForMaskedLM(RobertaPreTrainedModel):
         #print(task_name)
         sequence_output = outputs[0]
         #print(sequence_output)
+        if task_name is None:
+            task_name = "MLM"
+
         if task_name == "MLM": # MLM
             prediction_scores = self.mlm_head(sequence_output)
         elif task_name == "STI": # STI
@@ -114,6 +117,8 @@ class RobertaForMaskedLM(RobertaPreTrainedModel):
         elif task_name == "MIP": # MIP
             hidden_states = self.dropout(sequence_output)
             prediction_scores = self.mip_head(hidden_states)
+        else:
+            raise ValueError(f"Unsupported task_name: '{task_name}'. Supported tasks: MLM, STI, MIP.")
 
 
         lm_loss = None

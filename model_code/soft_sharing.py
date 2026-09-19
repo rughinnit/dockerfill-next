@@ -33,7 +33,7 @@ class RobertaForMLM(RobertaPreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.num_labels = 50000
+        self.num_labels = getattr(config, "vocab_size", 50000)
         self.roberta = RobertaModel(config, add_pooling_layer=False)
         # MLM
         self.mlm_head = RobertaLMHead(config)
@@ -109,8 +109,6 @@ class RobertaForMLM(RobertaPreTrainedModel):
         )
 
 class RobertaForSTI(RobertaPreTrainedModel):
-    _tied_weights_keys = ["lm_head.decoder.weight", "lm_head.decoder.bias"]
-
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = 42
@@ -166,7 +164,7 @@ class RobertaForSTI(RobertaPreTrainedModel):
         sequence_output = outputs[0]
 
         hidden_states = self.dropout(sequence_output)
-        prediction_scores = self.tti_head(hidden_states)
+        prediction_scores = self.sti_head(hidden_states)
 
 
         lm_loss = None
@@ -190,8 +188,6 @@ class RobertaForSTI(RobertaPreTrainedModel):
         )
 
 class RobertaForMIP(RobertaPreTrainedModel):
-    _tied_weights_keys = ["lm_head.decoder.weight", "lm_head.decoder.bias"]
-
     def __init__(self, config):
         super().__init__(config)
         self.num_labels = 18

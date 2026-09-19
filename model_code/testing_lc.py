@@ -1,122 +1,170 @@
 import os
-
-from torchmetrics.text import EditDistance, BLEUScore, ROUGEScore
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["WANDB_DISABLED"]= "true"
-import torch
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-import pickle
-
-from sklearn.metrics import f1_score, roc_auc_score, accuracy_score, precision_score, recall_score, average_precision_score, balanced_accuracy_score
-from transformers import RobertaForMaskedLM, RobertaConfig
-from transformers import PreTrainedTokenizerFast
-import numpy as np
-import random
-import evaluate
 import gc
-from GPUtil import showUtilization as gpu_usage
-from numba import cuda
+import pickle
+import random
 import logging
-from torch import nn
-from transformers import Trainer
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+
+import numpy as np
+import torch
+from transformers import PreTrainedTokenizerFast
+
+from torchmetrics.text import EditDistance, BLEUScore
 from torchmetrics.text.rouge import ROUGEScore
-from nltk.translate import meteor
-from collections import Counter
+from nltk.translate.meteor_score import meteor_score
+
+try:
+    from GPUtil import showUtilization as gpu_usage
+except ImportError:
+    gpu_usage = None
+
+try:
+    from numba import cuda
+except ImportError:
+    cuda = None
+
+os.environ["WANDB_DISABLED"] = "true"
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
-#torch.cuda.set_device(1)
-#print(device)
-##free GPU cache
-def free_gpu_cache():
-    print("Initial GPU Usage")
-    gpu_usage()
+def free_gpu_cache() -> None:
+    if not torch.cuda.is_available():
+        return
+    if gpu_usage is not None:
+        try:
+            gpu_usage()
+        except Exception:
+            pass
     gc.collect()
     torch.cuda.empty_cache()
-    cuda.select_device(0)
-    cuda.close()
-    cuda.select_device(0)
-    print("GPU Usage after emptying the cache")
-    gpu_usage()
+    if cuda is not None:
+        try:
+            cuda.select_device(0)
+            cuda.close()
+            cuda.select_device(0)
+        except Exception:
+            pass
 
-#ree_gpu_cache()
 
-##set seed
-def set_seed(seed):
+def set_seed(seed: int = 123) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-set_seed(123)
 
-tokenizer = PreTrainedTokenizerFast.from_pretrained("tokenizer.json")
-tokenizer.add_special_tokens({'bos_token': '<s>'})
-tokenizer.add_special_tokens({'eos_token': '</s>'})
-tokenizer.add_special_tokens({'unk_token': '<unk>'})
-tokenizer.add_special_tokens({'mask_token': '<mask>'})
-tokenizer.add_special_tokens({'pad_token': '<pad>'})
 
-def testing(path):
-    with open('line_results.pkl', 'rb') as f:
+def get_tokenizer(tokenizer_path: Optional[str] = None) -> PreTrainedTokenizerFast:
+    candidate_paths = [
+        tokenizer_path,
+        "data/tokenizer.json",
+        "../data/tokenizer.json",
+        "tokenizer.json",
+    ]
+    resolved_path = None
+    for p in candidate_paths:
+        if p and os.path.exists(p):
+            resolved_path = p
+            break
+
+    if resolved_path is None:
+        base_dir = Path(__file__).resolve().parent.parent
+        default_p = base_dir / "data" / "tokenizer.json"
+        resolved_path = str(default_p) if default_p.exists() else "tokenizer.json"
+
+    tokenizer = PreTrainedTokenizerFast(tokenizer_file=resolved_path)
+    tokenizer.add_special_tokens({'bos_token': '<s>'})
+    tokenizer.add_special_tokens({'eos_token': '</s>'})
+    tokenizer.add_special_tokens({'unk_token': '<unk>'})
+    tokenizer.add_special_tokens({'mask_token': '<mask>'})
+    tokenizer.add_special_tokens({'pad_token': '<pad>'})
+    return tokenizer
+
+
+def testing(path: str = "line_results.pkl", tokenizer: Optional[PreTrainedTokenizerFast] = None) -> Dict[str, float]:
+    """
+    Evaluate Line Completion (LC) metrics: EM, ED, BLEU, ROUGE-L, and METEOR.
+    """
+    candidates = [
+        path,
+        f"{path}.pkl",
+        f"line_results_{path}.pkl",
+        "line_results.pkl",
+    ]
+    resolved_file = None
+    for c in candidates:
+        if os.path.exists(c):
+            resolved_file = c
+            break
+
+    if resolved_file is None:
+        print(f"Results file for path '{path}' not found.")
+        return {}
+
+    if tokenizer is None:
+        tokenizer = get_tokenizer()
+
+    with open(resolved_file, 'rb') as f:
         test_dataset = pickle.load(f)
 
-    #print(test_dataset[0])
+    number = len(test_dataset)
+    if number == 0:
+        print("Dataset is empty.")
+        return {}
+
     masks = 0
     perfect = 0
-    edits = 0
-    bleu = 0
-    rouge = 0
-    meteor_value = 0
-    number = len(test_dataset)
-    no = 0
-    for data in test_dataset:
-        no = no + 1
-        print(no)
-        #print(data)
+    edits = 0.0
+    bleu = 0.0
+    rouge = 0.0
+    meteor_value = 0.0
+
+    ed_metric = EditDistance()
+    bleu_metric = BLEUScore()
+    rouge_metric = ROUGEScore()
+
+    for no, data in enumerate(test_dataset, start=1):
         predictions = np.array(data['predictions'])
         labels = data['labels']
 
-        masks = masks + len(labels)
+        masks += len(labels)
 
-        #if np.array_equal(predictions[:, 0], labels):
         if np.array_equal(predictions, labels):
-            perfect = perfect + 1
+            perfect += 1
 
-        #preds = [tokenizer.decode(item) for item in predictions[:,0]]
-        preds = [tokenizer.decode(item) for item in predictions]
-        #print(preds)
-        trues = [tokenizer.decode(item) for item in labels]
-        #print(trues)
-        length_preds = len(''.join(preds))
-        length_trues = len(''.join(trues))
-        if length_preds >= length_trues:
-            length = length_preds
-        else:
-            length = length_trues
-        ed_metric = EditDistance()
-        edits = edits + float(ed_metric([' '.join(preds)],[' '.join(trues)])/length)
-        #print(edits)
+        preds = [tokenizer.decode(int(item)) for item in (predictions[:, 0] if predictions.ndim == 2 else predictions)]
+        trues = [tokenizer.decode(int(item)) for item in labels]
 
-        bleu_metric = BLEUScore()
-        bleu = bleu + bleu_metric([' '.join(preds)],[[' '.join(trues)]])
+        pred_str = ' '.join(preds)
+        true_str = ' '.join(trues)
+        length = max(len(''.join(preds)), len(''.join(trues)), 1)
 
-        rouge_metric = ROUGEScore()
-        rouge = rouge + rouge_metric(' '.join(preds),' '.join(trues))['rougeL_fmeasure']
+        edits += float(ed_metric([pred_str], [true_str]) / length)
+        bleu += float(bleu_metric([pred_str], [[true_str]]))
+        rouge += float(rouge_metric(pred_str, true_str)['rougeL_fmeasure'])
 
-        meteor_value = meteor_value + meteor([preds], trues)
+        # Compute meteor score with tokenized words
+        meteor_value += float(meteor_score([trues], preds))
 
     metrics = {
         'perfect': perfect,
         'masks': masks,
         'BLEU': float(bleu / number),
-        'ROUGE-L': float(rouge/number),
-        'METEOR': float(meteor_value/number),
-        'EM': float(perfect/number),
-        'ED': float(edits/number)
+        'ROUGE-L': float(rouge / number),
+        'METEOR': float(meteor_value / number),
+        'EM': float(perfect / number),
+        'ED': float(edits / number),
     }
-    print(metrics)
+    print("LC Evaluation metrics:", metrics)
+    return metrics
 
 
-print('DockerFill')
-testing('pretraining')
+if __name__ == '__main__':
+    set_seed(123)
+    target_path = "pretraining"
+    if os.path.exists("line_results.pkl") or os.path.exists(f"line_results_{target_path}.pkl"):
+        print(f"Testing LC on {target_path}:")
+        testing(target_path)
+    else:
+        print("line_results.pkl not found; ready for evaluation when results are generated.")

@@ -1,6 +1,11 @@
 import dataclasses
 from torch.utils.data.dataloader import DataLoader
-from transformers.data.data_collator import DataCollator, InputDataClass
+from transformers.data.data_collator import (
+    DataCollator,
+    DefaultDataCollator,
+    InputDataClass,
+    default_data_collator,
+)
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import RandomSampler
 from typing import List, Union, Dict

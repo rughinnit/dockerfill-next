@@ -1,12 +1,25 @@
 library(psych)
-M<-read.csv('/dockerfill_inputs.csv',header=TRUE,sep=",")
-cohen.kappa(x=cbind(M$nature1,M$nature2))  #0.82
-cohen.kappa(x=cbind(M$similarityld,M$similaritycs))  #0.82
+library(ggplot2)
 
+if (file.exists("/dockerfill_inputs.csv")) {
+  M <- read.csv('/dockerfill_inputs.csv', header=TRUE, sep=",")
+  if ("nature1" %in% colnames(M) && "nature2" %in% colnames(M)) {
+    cohen.kappa(x=cbind(M$nature1, M$nature2))
+  }
+}
 
-M<-read.csv('all_results.csv',header=TRUE,sep=",")
-cohen.kappa(x=cbind(M$naturalness1,M$naturalness2))  #0.82
-cohen.kappa(x=cbind(M$similarity1,M$similarity2))  #0.82
+scores_path <- if (file.exists("all_results.csv")) {
+  "all_results.csv"
+} else if (file.exists("data/manual_evaluation_scores.csv")) {
+  "data/manual_evaluation_scores.csv"
+} else {
+  "all_results.csv"
+}
+M <- read.csv(scores_path, header=TRUE, sep=",")
+if ("naturalness1" %in% colnames(M) && "naturalness2" %in% colnames(M)) {
+  cohen.kappa(x=cbind(M$naturalness1, M$naturalness2))
+  cohen.kappa(x=cbind(M$similarity1, M$similarity2))
+}
 
 M$model<-factor(M$model,c("CodeBERT","CodeSage","ContraCode","StarEncoder","UniXcoder","DockerFill"))
 

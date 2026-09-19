@@ -1,6 +1,16 @@
 import re
-import pymysql
-from transformers import PreTrainedTokenizerFast
+import os
+from pathlib import Path
+
+try:
+    import pymysql
+except ImportError:
+    pymysql = None
+
+try:
+    from transformers import PreTrainedTokenizerFast
+except ImportError:
+    PreTrainedTokenizerFast = None
 
 import threading
 
@@ -12,12 +22,25 @@ INSTRUCTIONS = [
 
 INSTRUCTION_PATTERN = re.compile(r"^\s*(?P<instruction>" + "|".join(INSTRUCTIONS) + r")\s*(?P<arguments>.*)", re.IGNORECASE)
 
-tokenizer = PreTrainedTokenizerFast.from_pretrained("D:/research-related/niuniu work/dockerfill/tokenizer/dcc-tokenizer.json")
-tokenizer.add_special_tokens({'bos_token': '<s>'})
-tokenizer.add_special_tokens({'eos_token': '</s>'})
-tokenizer.add_special_tokens({'unk_token': '<unk>'})
-tokenizer.add_special_tokens({'mask_token': '<mask>'})
-tokenizer.add_special_tokens({'pad_token': '<pad>'})
+
+def load_tokenizer(path=None):
+    if PreTrainedTokenizerFast is None:
+        return None
+    candidates = [
+        path,
+        os.path.join(Path(__file__).resolve().parent.parent, "data", "tokenizer.json"),
+        "data/tokenizer.json",
+        "../data/tokenizer.json",
+        "tokenizer.json",
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
+            tok = PreTrainedTokenizerFast(tokenizer_file=str(p))
+            tok.add_special_tokens({'bos_token': '<s>', 'eos_token': '</s>', 'unk_token': '<unk>', 'mask_token': '<mask>', 'pad_token': '<pad>'})
+            return tok
+    return None
+
+tokenizer = load_tokenizer()
 
 
 var = r"[a-zA-Z_][a-zA-Z0-9_]*"
@@ -306,14 +329,11 @@ def parse_dockerfile(dockerfile_content,parsed_tokens):
                 for argument in arguments.split():
                     #print(argument)
                     healthcheck_match = HEALTHCHECK_PATTERN.match(argument)
-                    if healthcheck_match.group("healthcheck_option"):
-                        #print("yes")
-                        parsed_tokens.append((healthcheck_match.group("healthcheck_option"), "HEALTHCHECK_OPTION"))
-                        parsed_tokens.append(("=", "EQUALS"))
-                        parsed_tokens.append((healthcheck_match.group("value"), "VALUE"))
-
-
                     if healthcheck_match:
+                        if healthcheck_match.group("healthcheck_option"):
+                            parsed_tokens.append((healthcheck_match.group("healthcheck_option"), "HEALTHCHECK_OPTION"))
+                            parsed_tokens.append(("=", "EQUALS"))
+                            parsed_tokens.append((healthcheck_match.group("value"), "VALUE"))
                         if healthcheck_match.group("command"):
                             parsed_tokens.append(("CMD", "CMD"))
                             parsed_tokens.append((healthcheck_match.group("command"), "COMMAND"))
@@ -360,7 +380,7 @@ if __name__ == '__main__':
             try:
                 parsed_tokens = parse_dockerfile(row[1],[])
                 tag = 1
-            except e:
+            except Exception as e:
             #    print(e)
                 tag = 0
             #print("Tokens:")
@@ -394,4 +414,4 @@ if __name__ == '__main__':
     conn.close()
     conn_u.close()
 
-print("MIS:%s"%mis_count)
+    print("MIS:%s"%mis_count)
